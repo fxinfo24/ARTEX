@@ -759,34 +759,42 @@ content before sharing.
 
 ### Backups
 
-`scripts/backup.sh` dumps the Postgres database (and optionally the data directory) with
-timestamped output and rotation:
+`scripts/backup.sh` writes one timestamped archive per run — the Postgres dump, the data volume
+(traffic index, tasks, transcripts), the keys volume (`jwt.key`, `secret.key`) and the skills
+volume — and verifies it before reporting success:
 
 ```bash
-scripts/backup.sh --with-data          # db dump + data/ archive, keep 14
-scripts/backup.sh --keep 7             # db only, keep 7
+scripts/backup.sh                      # one archive, keep 14
+scripts/backup.sh --keep 7             # keep 7
+scripts/backup.sh --project artex-2    # another Compose project on the same host
 ```
 
-Restore into a running stack:
+The volumes are found by their Compose labels (`com.docker.compose.project` and
+`com.docker.compose.volume`), not by name, so a stack started from another directory still backs
+up to its own volumes; a volume the project does not have stops the run instead of producing an
+incomplete archive. The dump runs inside the project's postgres container, so no host `psql` is
+needed, and the archive is read back (`gzip -t`, a listing, and the key files) before the run
+reports success. Output goes to `backups/` unless `--output-dir` says otherwise.
+
+Restore: stop the stack, unpack the volumes, start postgres, then load the dump.
 
 ```bash
-gunzip -c backups/artex-db-<timestamp>.sql.gz | docker compose exec -T postgres \
-  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+scripts/backup.sh --help               # the exact restore commands
 ```
 
 Stored secrets (LLM API keys, proxies and gateway custom headers, MCP env, task credentials, notification channel config,
 Brave/Tavily search keys, web search and global proxies, the execution spec of custom tools, the
 capture-proxy rewrite rules) are
 encrypted in the database with the key in `keys/secret.key` (generated at first start, mode 0600,
-next to `jwt.key`). **A database backup without that key cannot restore those secrets**: back up
-`keys/` with the dump, separately. Deployments without a persistent disk set
+next to `jwt.key`). **A database backup without that key cannot restore those secrets**: the
+backup archive carries both key files, so any copy of it holds them — treat it as a secret. Deployments without a persistent disk set
 `ARTEX_SECRET_KEY` (32 bytes, base64 or hex, e.g. `openssl rand -base64 32`). ARTEX refuses to start
 when the database holds encrypted secrets and no key is available.
 
 Daily cron example (03:20, operator crontab):
 
 ```
-20 3 * * * cd /path/to/ARTEX && scripts/backup.sh --with-data >> backups/backup.log 2>&1
+20 3 * * * cd /path/to/ARTEX && scripts/backup.sh >> backups/backup.log 2>&1
 ```
 
 ### Updating and upgrading

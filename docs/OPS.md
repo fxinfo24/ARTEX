@@ -49,20 +49,21 @@ and are edited in **System → LLM / Settings / Notify**, not in `config.json`.
 ## 3. Backup and restore
 
 ```bash
-scripts/backup.sh                       # database dump only, 14 rotations
-scripts/backup.sh --with-data --keep 30 # also archive the data/ bind mount
+scripts/backup.sh                       # one verified archive, 14 rotations
+scripts/backup.sh --keep 30             # keep 30
 ```
 
-The dump runs inside the `postgres` compose service, so no host `psql` is needed. Restore:
+Each run writes `backups/artex-state-<ts>.tar.gz` holding `manifest.txt`, `db.sql` and
+`volumes/artex_data`, `volumes/artex_keys`, `volumes/artex_skills`. The volumes are resolved by
+their Compose labels, so a stack started from another directory still backs up to its own
+volumes, and a missing volume stops the run. The dump runs inside the project's `postgres`
+container, so no host `psql` is needed; the archive is read back and checked before the run
+reports success.
 
-```bash
-gunzip -c backups/artex-db-<ts>.sql.gz | docker compose exec -T postgres \
-  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
-```
-
-Back up the key directory as well: without it, JWTs cannot be verified and sealed
-secrets cannot be decrypted. Keep it outside the database backup but under the same
-access controls.
+The archive holds `jwt.key` and `secret.key`: without them JWTs cannot be verified and sealed
+secrets cannot be decrypted, and with them the archive is as sensitive as the install. Keep it
+under the same access controls as `keys/`. `scripts/backup.sh --help` prints the restore
+commands.
 
 ## 4. Key rotation
 
