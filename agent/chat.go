@@ -34,6 +34,7 @@ type ChatAgent struct {
 	window         int
 	proxyAddr      string
 	proxyCACert    string
+	egressToken    string
 	webSearch      WebSearchOpts
 	guard          *guard.Guard // optional; nil disables intercept hooks for chat
 	nonStreamingFn func() bool  // resolver: use non-streaming (Complete) path? (nil = streaming)
@@ -70,6 +71,11 @@ func (c *ChatAgent) maxTokens() int {
 // SetProxy points the chat agent's WebFetch/Bash at the recording proxy plus the
 // CA cert it trusts (empty addr = direct). Kept for parity with the other agents.
 func (c *ChatAgent) SetProxy(addr, caCert string) { c.proxyAddr, c.proxyCACert = addr, caCert }
+
+// SetEgressToken sets the session token the Bash environment carries into the
+// recording proxy (see traffic/gate.go). Empty for chat: a chat turn's target
+// scope lives in its context, not in a token a subprocess can carry.
+func (c *ChatAgent) SetEgressToken(token string) { c.egressToken = token }
 
 // SetWebSearch selects the web_search backend for the chat agent (off by default).
 func (c *ChatAgent) SetWebSearch(o WebSearchOpts) { c.webSearch = o }
@@ -198,7 +204,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 
 	var bashEnv []string
 	if !isOrchestrationChatAgent(agentKey) {
-		bashEnv = proxyEnv(c.proxyAddr, c.proxyCACert) // Bash subcommands go through the proxy + trust the CA by default
+		bashEnv = proxyEnv(c.proxyAddr, c.proxyCACert, c.egressToken) // Bash subcommands go through the proxy + trust the CA by default
 	}
 
 	system, boundary := deferredSystem(chatSystem(agentKey, c.workDir, sessionWorkDir), def)

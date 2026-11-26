@@ -28,8 +28,18 @@ func (s *sink) Requestheaders(f *mproxy.Flow) {
 		return
 	}
 	id := f.ConnContext.ClientConn.Id
-	if egress.IsPaceMarker(f.Request.Header.Get("Proxy-Authorization")) {
+	auth := f.Request.Header.Get("Proxy-Authorization")
+	if egress.IsPaceMarker(auth) {
 		s.paced.Store(id, struct{}{})
+	}
+	// The marker userinfo also names the session the connection belongs to. It
+	// goes no further than this: the header never reaches the target, and the
+	// token travels to the gate relay through the upstream proxy URL
+	// (upstreamFor), which is what admits the connection at connect time.
+	if token, ok := egress.MarkerToken(auth); ok && token != "" {
+		if raw := f.Request.Raw(); raw != nil {
+			*raw = *raw.WithContext(egress.WithProxyToken(raw.Context(), token))
+		}
 	}
 	f.Request.Header.Del("Proxy-Authorization")
 	if f.Request.Method == http.MethodConnect || f.Request.URL == nil {

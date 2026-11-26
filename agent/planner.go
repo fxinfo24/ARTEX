@@ -35,6 +35,7 @@ type Planner struct {
 	steerWork         func(intentID int64, msg string) error // engine callback to steer a running work mid-run (nil = off)
 	proxyAddr         string                                 // recording proxy for WebFetch (empty = direct)
 	proxyCACert       string                                 // recording proxy's CA cert path (HTTPS verify)
+	egressToken       string                                 // this task's session token for the gate relay (empty = none)
 	factTraffic       FactTrafficLookup                      // proxy captures for fact provenance (nil = activity-only)
 	webSearch         WebSearchOpts                          // web_search tool backend selection (off by default)
 	workDir           string                                 // shared work dir (surfaced in prompt as artifact-output target)
@@ -99,6 +100,10 @@ func (p *Planner) compactionWindow() int {
 // SetProxy points the planner's WebFetch at the recording proxy plus the CA cert
 // it trusts to verify HTTPS through it (empty addr = direct).
 func (p *Planner) SetProxy(addr, caCert string) { p.proxyAddr, p.proxyCACert = addr, caCert }
+
+// SetEgressToken sets the session token the Bash environment carries into the
+// recording proxy (see traffic/gate.go).
+func (p *Planner) SetEgressToken(token string) { p.egressToken = token }
 
 // SetFactTraffic wires the proxy capture store used to classify recorded facts
 // (#124 row 1). nil keeps the activity-only classification.
@@ -609,7 +614,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		DeepSeekSearchAPIKey:  p.webSearch.DeepSeekAPIKey,
 		DeepSeekSearchModel:   p.webSearch.DeepSeekModel,
 		WebSearchProxy:        p.webSearch.Proxy,
-		BashEnv:               proxyEnv(p.proxyAddr, p.proxyCACert), // Bash subcommands go through the proxy + trust its CA by default
+		BashEnv:               proxyEnv(p.proxyAddr, p.proxyCACert, p.egressToken), // Bash subcommands go through the proxy + trust its CA by default
 		WorkingDir:            taskDir,                              // the main run directory <workDir>/tasks/<taskID>/main
 		ToolOutputDir:         TaskToolOutputDir(p.workDir, taskID, taskDir),
 		MaxTurns:              p.maxTurns, // 0 = unlimited (configurable in agent management)

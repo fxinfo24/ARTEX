@@ -535,3 +535,39 @@ func TestPinUsedRecordsEffectiveNameOnly(t *testing.T) {
 		t.Fatalf("rows %v, target %+v; want a name-only first use", got, g.store.logged[0].Audit.Targets[0])
 	}
 }
+
+// A gate decision made for a relayed connection connects with the dialer the
+// caller supplied — the recording proxy's gate relay chains an approved target to
+// the global egress proxy that way — and still connects only to the addresses it
+// compared.
+func TestDialOverrideCarriesOnlyApprovedAddresses(t *testing.T) {
+	g, rec := dialGate(t)
+	srv, _, port := pinnedServer(t, "override")
+	rec.route("203.0.113.7:"+port, srv.Listener.Addr().String())
+	g.res.set("app.example.com", "203.0.113.7")
+	g.pin("app.example.com", atoiPort(t, port), "203.0.113.7")
+
+	var mu sync.Mutex
+	var via []string
+	override := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		mu.Lock()
+		via = append(via, addr)
+		mu.Unlock()
+		return rec.dial(ctx, network, addr)
+	}
+	ctx := WithDialOverride(WithTargetScope(context.Background(), g.scope), override)
+	conn, err := g.ic.DialSOCKS5(ctx, "tcp", "app.example.com:"+port)
+	if err != nil {
+		t.Fatalf("dial through the override: %v", err)
+	}
+	conn.Close()
+	mu.Lock()
+	got := append([]string(nil), via...)
+	mu.Unlock()
+	if !slices.Equal(got, []string{"203.0.113.7:" + port}) {
+		t.Fatalf("the override was asked to connect to %v, want the pinned address only", got)
+	}
+	if calls := rec.calls(); !slices.Equal(calls, []string{"203.0.113.7:" + port}) {
+		t.Fatalf("dialled %v, want the pinned address once", calls)
+	}
+}

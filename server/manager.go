@@ -265,6 +265,9 @@ type Manager struct {
 	interceptor *intercept.Interceptor // user-configured tool-call interception rules
 
 	taskUserAgents config.TaskUserAgents // existing tasks verified at startup
+	// egressSecret keys the per-session tokens the Bash environment carries into
+	// the recording proxy (egressgate.go). Generated per process.
+	egressSecret []byte
 
 	// Capture-proxy rewrite rules: rewriteMu serializes reloads, rewriteSet is
 	// the snapshot last compiled, rewriteErrors outlives the reloads.
@@ -465,9 +468,14 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if err := pg.EnsureLLMUsageTable(); err != nil {
 		log.Printf("[llmusage] create table: %v", err)
 	}
+	egressSecret, err := newEgressGateSecret()
+	if err != nil {
+		_ = pg.Close()
+		return nil, err
+	}
 	m := &Manager{
 		dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg),
-		taskUserAgents: cfg.TaskUserAgents,
+		taskUserAgents: cfg.TaskUserAgents, egressSecret: egressSecret,
 	}
 	// Behind any proxy in the path (the recording proxy, the global egress proxy,
 	// or a custom tool's own proxy) the proxy chooses the address, so a target
@@ -501,6 +509,11 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 		}
 		if tr != nil {
 			m.traffic = tr
+			// The recording proxy dials through the target gate: a connection it
+			// receives from a Bash subcommand is admitted (or refused) on the
+			// address at connect time, under the scope of the task whose session
+			// token it carries. Must be in place before the proxy accepts one.
+			m.startEgressGate()
 			m.reloadRewriteRules() // in place before the proxy accepts a connection
 			m.reloadTamperHooks()  // opt-in behind ARTEX_TAMPER_HOOKS_ENABLED=1
 			if scfg, ok := traffic.SOCKS5ConfigFromEnv(); ok {

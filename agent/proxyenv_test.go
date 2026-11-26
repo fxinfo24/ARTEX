@@ -6,7 +6,7 @@ import (
 )
 
 func TestProxyEnvEmptyIsNil(t *testing.T) {
-	if env := proxyEnv("", ""); env != nil {
+	if env := proxyEnv("", "", ""); env != nil {
 		t.Fatalf("proxyEnv(\"\", \"\") = %v, want nil (direct)", env)
 	}
 }
@@ -14,7 +14,7 @@ func TestProxyEnvEmptyIsNil(t *testing.T) {
 func TestProxyEnvSetsAllProxyForSocks5(t *testing.T) {
 	// Capture-off egress path: a socks5 proxy, no MITM CA. ALL_PROXY must be set
 	// (curl reads socks5 only from there), and no CA vars should appear.
-	env := proxyEnv("socks5://10.0.0.1:1080", "")
+	env := proxyEnv("socks5://10.0.0.1:1080", "", "")
 	has := func(prefix string) bool {
 		for _, e := range env {
 			if strings.HasPrefix(e, prefix) {
@@ -34,7 +34,7 @@ func TestProxyEnvSetsAllProxyForSocks5(t *testing.T) {
 }
 
 func TestProxyEnvInjectsCAWhenRecording(t *testing.T) {
-	env := proxyEnv("http://127.0.0.1:8788", "/data/ca.pem")
+	env := proxyEnv("http://127.0.0.1:8788", "/data/ca.pem", "")
 	has := func(prefix string) bool {
 		for _, e := range env {
 			if strings.HasPrefix(e, prefix) {
@@ -69,6 +69,23 @@ func TestProxyEnvMarksOnlyTheRecordingProxy(t *testing.T) {
 			t.Errorf("%s: %d proxy variables, want 6", what, n)
 		}
 	}
-	check(proxyEnv("http://127.0.0.1:8788", "/data/ca.pem"), "http://artex-pace:artex-pace@127.0.0.1:8788", "capture on")
-	check(proxyEnv("http://u:p@10.0.0.1:3128", ""), "http://u:p@10.0.0.1:3128", "capture off")
+	check(proxyEnv("http://127.0.0.1:8788", "/data/ca.pem", ""), "http://artex-pace:artex-pace@127.0.0.1:8788", "capture on")
+	check(proxyEnv("http://u:p@10.0.0.1:3128", "", ""), "http://u:p@10.0.0.1:3128", "capture off")
+}
+
+// With a session token the recording proxy URL carries it, which is what binds
+// a Bash connection to the task's target scope at connect time; without one the
+// constant marker still names the connection for pacing.
+func TestProxyEnvCarriesSessionToken(t *testing.T) {
+	env := proxyEnv("http://127.0.0.1:8788", "/data/ca.pem", "tok-task-7")
+	for _, e := range env {
+		if strings.HasPrefix(e, "HTTP_PROXY=") {
+			want := "http://artex-pace:tok-task-7@127.0.0.1:8788"
+			if e != "HTTP_PROXY="+want {
+				t.Fatalf("HTTP_PROXY = %q, want %q", e, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("no HTTP_PROXY in %v", env)
 }

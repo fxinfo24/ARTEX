@@ -32,6 +32,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/egress"
 	"github.com/Autumn-27/artex/traffic/rewrite"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
@@ -291,6 +292,12 @@ type Traffic struct {
 	// via StartTransparentTCP (P4.1b).
 	transparentMu sync.Mutex
 	transparent   *transparentServer
+	// gate is the loopback SOCKS5 relay the proxy dials as its upstream, when one
+	// is installed (SetEgressGate): the recording proxy has no dial hook of its
+	// own, so this is where a proxied connection meets the target gate. Nil until
+	// the platform wires it.
+	gateMu sync.Mutex
+	gate   *gateRelay
 }
 
 // Open initializes the traffic tree, blob store and SQLite index under dir.
@@ -352,7 +359,7 @@ func Open(dir, addr string) (*Traffic, error) {
 	// a direct dial. When a global egress proxy IS configured (SetUpstreamProxy),
 	// every captured request — intercepted AND transparently tunneled — is
 	// forwarded through it instead, so no host leaks the real source IP.
-	p.SetUpstreamProxy(func(*http.Request) (*url.URL, error) { return t.upstream.Load(), nil })
+	p.SetUpstreamProxy(func(req *http.Request) (*url.URL, error) { return t.upstreamFor(req), nil })
 	// Fail-open: MITM every host by default, EXCEPT ones a prior request proved we
 	// can't intercept without breaking (see maybePassthrough). Those are tunneled
 	// transparently so the request still reaches the target instead of being killed.
@@ -493,6 +500,65 @@ func hostOnly(hostport string) string {
 
 // ProxyAddr returns the address workers should set as HTTP(S)_PROXY. A bare
 // ":port" means "bind all interfaces" (legacy default), so map it to loopback.
+// SetEgressGate starts the loopback gate relay and points the recording proxy's
+// upstream at it: every connection the proxy makes is then decided by cfg.Dial,
+// on the address at connect time, under the target scope the connection's
+// session token names. Until it is called the proxy dials targets itself, as it
+// always did.
+func (t *Traffic) SetEgressGate(cfg GateConfig) error {
+	t.gateMu.Lock()
+	defer t.gateMu.Unlock()
+	if t.gate != nil {
+		return errors.New("gate relay already running")
+	}
+	relay, err := startGateRelay(cfg)
+	if err != nil {
+		return err
+	}
+	t.gate = relay
+	return nil
+}
+
+// GateAddr returns the loopback address of the gate relay, or "" when none is
+// installed.
+func (t *Traffic) GateAddr() string {
+	t.gateMu.Lock()
+	defer t.gateMu.Unlock()
+	if t.gate == nil {
+		return ""
+	}
+	return t.gate.Addr()
+}
+
+// upstreamFor is the upstream of one request: the gate relay, carrying the
+// session token of the request when it has one, else the configured global
+// egress proxy (nil: direct).
+func (t *Traffic) upstreamFor(req *http.Request) *url.URL {
+	addr := t.GateAddr()
+	if addr == "" {
+		return t.upstream.Load()
+	}
+	u := &url.URL{Scheme: "http", Host: addr}
+	if token := egress.ProxyToken(req.Context()); token != "" {
+		u.User = url.UserPassword(egress.PaceUser, token)
+	}
+	return u
+}
+
+// DialUpstream opens a connection the platform already decided to make: through
+// the global egress proxy when one is configured, straight otherwise. It is the
+// dial the gate relay hands to the gate, so an approved target still leaves
+// through the proxy the operator configured.
+func (t *Traffic) DialUpstream(ctx context.Context, network, addr string) (net.Conn, error) {
+	if network != "tcp" && network != "tcp4" && network != "tcp6" {
+		return nil, fmt.Errorf("dial %s: unsupported network %q", addr, network)
+	}
+	if u := t.upstream.Load(); u != nil {
+		return dialThroughProxy(ctx, u, addr)
+	}
+	return upstreamDialer.DialContext(ctx, network, addr)
+}
+
 func (t *Traffic) ProxyAddr() string {
 	if strings.HasPrefix(t.addr, ":") {
 		return "http://127.0.0.1" + t.addr
@@ -579,6 +645,13 @@ func (t *Traffic) Close() error {
 	t.transparentMu.Unlock()
 	if tsrv != nil {
 		_ = tsrv.Close()
+	}
+	t.gateMu.Lock()
+	relay := t.gate
+	t.gate = nil
+	t.gateMu.Unlock()
+	if relay != nil {
+		_ = relay.Close()
 	}
 	t.reaping.Wait()
 	t.sweeping.Wait()

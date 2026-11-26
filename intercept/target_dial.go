@@ -28,6 +28,30 @@ import (
 // baseDial opens a connection with the dialer settings of http.DefaultTransport.
 var baseDial = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
 
+// dialOverrideKey carries the dialer a single gate decision must connect with,
+// in place of the session interceptor's own. The recording proxy uses it: a
+// connection it relays must still leave through the global egress proxy when
+// one is configured, so the gate decides, and the dial it opens goes through
+// that proxy instead of straight to the address.
+type dialOverrideKey struct{}
+
+// WithDialOverride returns ctx whose gate decisions connect with dial.
+func WithDialOverride(ctx context.Context, dial func(ctx context.Context, network, addr string) (net.Conn, error)) context.Context {
+	if dial == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, dialOverrideKey{}, dial)
+}
+
+// baseDialerFor is the dialer the gate connects the approved addresses with:
+// the override carried by ctx, else the session interceptor's own.
+func (i *Interceptor) baseDialerFor(ctx context.Context) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	if dial, ok := ctx.Value(dialOverrideKey{}).(func(ctx context.Context, network, addr string) (net.Conn, error)); ok && dial != nil {
+		return dial
+	}
+	return i.baseDialer()
+}
+
 // PinnedDialer returns the DialContext of a platform-owned HTTP client run by
 // the tool toolName. The scope is read from the context net/http passes to the
 // dial, which carries the values of the request's context: the scope the hook,
@@ -105,7 +129,7 @@ func (i *Interceptor) dialTarget(ctx context.Context, scope TargetScope, toolNam
 	}
 	switch ct := c.checked[0]; ct.cover {
 	case coverDerived, coverNameOnly:
-		return i.baseDialer()(ctx, network, addr)
+		return i.baseDialerFor(ctx)(ctx, network, addr)
 	default:
 		return i.dialAddrs(ctx, network, ct.ips, t.Port)
 	}
@@ -153,7 +177,7 @@ func parseTargetAddr(addr string) (Target, error) {
 // order: the first that accepts wins. An address of the wrong family for tcp4
 // or tcp6 is skipped. When every attempt fails, the last error is returned.
 func (i *Interceptor) dialAddrs(ctx context.Context, network string, ips []string, port int) (net.Conn, error) {
-	dial := i.baseDialer()
+	dial := i.baseDialerFor(ctx)
 	var last error = &net.AddrError{Err: "no suitable address found", Addr: strings.Join(ips, ", ")}
 	for _, ip := range ips {
 		a, err := netip.ParseAddr(ip)
@@ -194,6 +218,14 @@ func (e *dialError) Error() string {
 		msg += " An approval was requested. Retry the same call after the approval."
 	}
 	return msg + " Do not fetch the target with another tool or by its address."
+}
+
+// BlockedError is a dial refusal with a platform control code, for callers that
+// gate a connection themselves and hand the failure to the client (the
+// recording proxy's gate relay does). It reads to IsTargetBlocked like the
+// refusals of PinnedDialer and DialSOCKS5.
+func BlockedError(code, target, reason string) error {
+	return &dialError{code: code, target: target, reason: reason}
 }
 
 // IsTargetBlocked reports whether err came from PinnedDialer / DialSOCKS5

@@ -70,6 +70,7 @@ type Worker struct {
 	workDir     string
 	proxyAddr   string
 	proxyCACert string            // recording proxy's CA cert path (for WebFetch HTTPS verify)
+	egressToken string            // this task's session token for the gate relay (empty = none)
 	factTraffic FactTrafficLookup // proxy captures for fact provenance (nil = activity-only)
 	webSearch   WebSearchOpts     // web_search tool backend selection (off by default)
 	tx          *transcript.Store // raw LLM conversation persistence (nil = off)
@@ -210,6 +211,11 @@ func (w *Worker) compactionWindow() int {
 // that MITM proxy. Empty addr disables the hint.
 func (w *Worker) SetProxy(addr, caCert string) { w.proxyAddr, w.proxyCACert = addr, caCert }
 
+// SetEgressToken sets the session token the Bash environment carries into the
+// recording proxy, which is what binds a proxied connection to this task's
+// target scope at connect time (see traffic/gate.go).
+func (w *Worker) SetEgressToken(token string) { w.egressToken = token }
+
 // SetFactTraffic wires the proxy capture store used to classify recorded facts
 // (#124 row 1). nil keeps the activity-only classification.
 func (w *Worker) SetFactTraffic(l FactTrafficLookup) { w.factTraffic = l }
@@ -233,12 +239,12 @@ func (w *Worker) SetWebSearch(o WebSearchOpts) { w.webSearch = o }
 // requests by the noise profile. Only Bash gets the marker; WebFetch, the http
 // custom tools and enrich keep the plain URL, since egress paces them already.
 // The global proxy (capture off) is left as configured.
-func proxyEnv(proxyAddr, caCert string) []string {
+func proxyEnv(proxyAddr, caCert, egressToken string) []string {
 	if proxyAddr == "" {
 		return nil
 	}
 	if caCert != "" {
-		proxyAddr = egress.MarkProxyURL(proxyAddr)
+		proxyAddr = egress.MarkProxyURLToken(proxyAddr, egressToken)
 	}
 	env := []string{
 		"HTTP_PROXY=" + proxyAddr, "HTTPS_PROXY=" + proxyAddr,
@@ -649,7 +655,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		WebSearchProxy:        w.webSearch.Proxy,
 		// Bash subcommands' HTTP goes through the recording proxy + trusts its CA by
 		// default (tools need no -x/-k).
-		BashEnv:    proxyEnv(w.proxyAddr, w.proxyCACert),
+		BashEnv:    proxyEnv(w.proxyAddr, w.proxyCACert, w.egressToken),
 		WorkingDir: runDir,
 		MaxTurns:   w.turnCap(ctx), // 0 = unlimited (configurable in agent management); clamped by the intent budget
 		// Wall-clock budget, judged at turn boundaries without interrupting mid-flight;
