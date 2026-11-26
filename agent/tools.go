@@ -494,8 +494,19 @@ func (t *ToolSet) graphOverview() actool.CoreTool {
 // an empty context and always needs this first).
 func (t *ToolSet) graphOverviewData() map[string]any {
 	out := map[string]any{}
+	// One statement for every node list below: the newest window of each kind,
+	// ordered by the index instead of sorting each kind on every turn
+	// (db.NodeWindows). The five calls this replaced read 100 goals, 50 hints,
+	// 300 intents and a thousand findings and facts each round.
+	windows, _ := t.ts.NodeWindows(map[string]int{
+		db.KindGoal:    100,
+		db.KindHint:    50,
+		db.KindIntent:  300,
+		db.KindFinding: 1000,
+		db.KindFact:    1000,
+	})
 	// goals summary folded in so the planner needn't call list_goals each round.
-	goals, _ := t.ts.ListByKind(db.KindGoal, 100)
+	goals := windows[db.KindGoal]
 	gsum := make([]map[string]any, 0, len(goals))
 	for _, g := range goals {
 		var p map[string]any
@@ -506,7 +517,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// hints: strategic hints attached to the graph by the human/main agent via
 	// add_hint; folded in so the planner reads them every round when generating
 	// intents (otherwise they'd be write-only).
-	hints, _ := t.ts.ListByKind(db.KindHint, 50)
+	hints := windows[db.KindHint]
 	hsum := make([]map[string]any, 0, len(hints))
 	for _, h := range hints {
 		var p map[string]any
@@ -555,7 +566,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	const openIntentsCap = 30
 	fr, _ := t.ts.Frontier(openIntentsCap) // priority DESC, id ASC — the top N by priority; the real total is in frontier_open
 	out["open_intents"] = compactIntents(fr, parentsOf, yieldsOf)
-	all, _ := t.ts.ListByKind(db.KindIntent, 300)
+	all := windows[db.KindIntent]
 	var running, recentDone []*db.Node
 	for _, n := range all {
 		switch n.State {
@@ -587,8 +598,8 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// now distinct node kinds. recent_facts surfaces fact summaries (esp.
 	// negative results) so the planner sees them in one call; full content
 	// via node_detail(id).
-	vulnNodes, _ := t.ts.ListByKind(db.KindFinding, 1000)
-	factNodes, _ := t.ts.ListByKind(db.KindFact, 1000) // newest first
+	vulnNodes := windows[db.KindFinding]
+	factNodes := windows[db.KindFact] // newest first
 	// findings_total is what goal judgment reads. A false_positive, duplicate,
 	// or ignored triage label is not an open finding, so it does not count.
 	// finding_list still shows those rows, with status, so the planner can see them.
