@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -276,6 +277,68 @@ func (s *AssetStore) isScopeExpansion(taskID int64, candidate TaskScope) (bool, 
 		}
 	}
 	return true, nil
+}
+
+// DeclaredScopeRows returns the scope rows the operator declared for a task
+// (source='manual'), and only those: rows the agent added and the scope an
+// inserted asset implied are coverage, and the target gate must not treat them as
+// authorization. It reads task_scope alone, without the company join
+// ListTaskScope does, because the gate calls it while a connection is being
+// decided and a read that also touches companies can deadlock against a
+// concurrent schema upgrade.
+func (d *DB) DeclaredScopeRows(taskID int64) ([]TaskScope, error) {
+	if taskID <= 0 {
+		return nil, nil
+	}
+	rows, err := d.Query(`
+SELECT kind, COALESCE(domain,''), COALESCE(net::text,''), COALESCE(value,'')
+FROM task_scope
+WHERE task_id=$1 AND source='manual'
+ORDER BY id`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TaskScope
+	for rows.Next() {
+		t := TaskScope{TaskID: taskID, Source: "manual"}
+		if err := rows.Scan(&t.Kind, &t.Domain, &t.Net, &t.Value); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// ScopeCoversHost reports whether one declared scope row covers host on any
+// port. host is a domain or an IP literal, ip is an address the name resolved to
+// (empty for an IP literal target). A root_domain covers the domain and its
+// subdomains, a subdomain covers itself, ip and cidr cover the addresses of the
+// network. company, icp and keyword rows name no address and cover nothing.
+//
+// It answers "does this scope reach that host", which is the question the target
+// gate asks when it decides whether an operator has already authorized a dial.
+func ScopeCoversHost(ts TaskScope, host, ip string) bool {
+	h := DomainKey(strings.ToLower(strings.TrimSpace(host)))
+	switch ts.Kind {
+	case "root_domain":
+		d := DomainKey(ts.Domain)
+		return d != "" && h != "" && (h == d || strings.HasSuffix(h, "."+d))
+	case "subdomain":
+		return ts.Domain != "" && h != "" && h == DomainKey(ts.Domain)
+	case "ip", "cidr":
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(ts.Net))
+		if err != nil {
+			return false
+		}
+		for _, raw := range []string{ip, host} {
+			addr, err := netip.ParseAddr(strings.TrimSpace(raw))
+			if err == nil && prefix.Contains(addr) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func scopeRowCovers(existing, cand TaskScope) bool {

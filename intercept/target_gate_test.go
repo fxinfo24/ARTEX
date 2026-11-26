@@ -19,7 +19,8 @@ import (
 type fakeStore struct {
 	mu     sync.Mutex
 	rules  []db.AssetInterceptRule
-	pins   []*db.TargetPin
+	pins     []*db.TargetPin
+	declared []db.TaskScope
 	exempt []db.TargetExemption
 	fail   map[string]error // by method name
 	reads  int
@@ -51,6 +52,15 @@ func (s *fakeStore) ActivePins(_ db.TargetScopeRef, host string, port int) ([]*d
 	}
 	slices.SortFunc(out, func(a, b *db.TargetPin) int { return b.Port - a.Port })
 	return out, nil
+}
+
+func (s *fakeStore) DeclaredScope(db.TargetScopeRef) ([]db.TaskScope, error) {
+	if err := s.read("DeclaredScope"); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.declared, nil
 }
 
 func (s *fakeStore) Exemptions() ([]db.TargetExemption, string, error) {

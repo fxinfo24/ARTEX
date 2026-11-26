@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -332,5 +333,52 @@ func TestDialMismatchOpensOneNewIPRequest(t *testing.T) {
 	}
 	if got := rec.calls(); len(got) != 2 || got[0] != "203.0.113.9:"+port || got[1] != got[0] {
 		t.Fatalf("dialled %v", got)
+	}
+}
+
+// Scope rows authorize a dial only when the operator wrote them. Rows the agent
+// added and the scope an inserted asset implied still open an approval request;
+// the operator's own row opens the connection, to the compared address.
+func TestDeclaredScopeOnlyOperatorRowsAuthorizeDial(t *testing.T) {
+	d := targetTestDB(t)
+	ic, res, rec := pgDialGate(t, d)
+	srv, hits, port := pinnedServer(t, "declared-scope-pg")
+	_ = srv
+	res.set("app.example.com", "203.0.113.7")
+	rec.route("203.0.113.7:"+port, srv.Listener.Addr().String())
+	scope := taskScope(t, d, ic, 0)
+	taskID, err := strconv.ParseInt(scope.TaskID, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	as := d.Assets()
+	if _, err := as.AddAgentScope(taskID, "root_domain", "example.com", "the agent widened the scope", "agent"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = PinnedDialer("WebFetch", true)(WithTargetScope(context.Background(), scope), "tcp", "app.example.com:"+port)
+	if err == nil || !strings.Contains(err.Error(), TargetApprovalPending) {
+		t.Fatalf("dial under an agent row: %v, want TARGET_APPROVAL_PENDING", err)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("%d requests reached the server", hits.Load())
+	}
+	if got := rec.calls(); len(got) != 0 {
+		t.Fatalf("dialled %v", got)
+	}
+	if ids := openRows(t, d, scope); len(ids) != 1 {
+		t.Fatalf("open requests = %v, want one", ids)
+	}
+
+	if _, err := as.AddAgentScope(taskID, "subdomain", "app.example.com", "the operator declared the host", "manual"); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := PinnedDialer("WebFetch", true)(WithTargetScope(context.Background(), scope), "tcp", "app.example.com:"+port)
+	if err != nil {
+		t.Fatalf("dial under the operator's row: %v", err)
+	}
+	conn.Close()
+	if got := rec.calls(); len(got) != 1 || got[0] != "203.0.113.7:"+port {
+		t.Fatalf("dialled %v, want only the compared address", got)
 	}
 }

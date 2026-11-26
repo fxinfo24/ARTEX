@@ -571,3 +571,93 @@ func TestDialOverrideCarriesOnlyApprovedAddresses(t *testing.T) {
 		t.Fatalf("dialled %v, want the pinned address once", calls)
 	}
 }
+
+// The operator's declared scope is authorization: a host it covers dials without
+// a pin, on the addresses the decision compared.
+func TestPinnedDialDeclaredScopeWithoutPin(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rows []db.TaskScope
+	}{
+		{"operator declared the root domain", []db.TaskScope{{Kind: "root_domain", Domain: "example.com", Source: "manual"}}},
+		{"operator declared the host", []db.TaskScope{{Kind: "subdomain", Domain: "app.example.com", Source: "manual"}}},
+		{"operator declared the address range", []db.TaskScope{{Kind: "cidr", Net: "203.0.113.0/24", Source: "manual"}}},
+		{"declared beside rows the agent added", []db.TaskScope{
+			{Kind: "root_domain", Domain: "example.org", Source: "agent"},
+			{Kind: "root_domain", Domain: "example.com", Source: "manual"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, rec := dialGate(t)
+			srv, hits, port := pinnedServer(t, "declared")
+			g.store.declared = tc.rows
+			g.res.set("app.example.com", "203.0.113.7")
+			rec.route("203.0.113.7:"+port, srv.Listener.Addr().String())
+
+			body, err := get(g.ctx(), pinnedClient(true), "http://app.example.com:"+port+"/")
+			if err != nil || body != "declared" {
+				t.Fatalf("declared host: %q, %v", body, err)
+			}
+			if hits.Load() != 1 {
+				t.Fatalf("%d requests reached the server, want one", hits.Load())
+			}
+			if got := rec.calls(); len(got) != 1 || got[0] != "203.0.113.7:"+port {
+				t.Fatalf("dialled %v, want only the compared address", got)
+			}
+			if got := g.store.outcomes(); len(got) != 1 || got[0] != "allowed/declared_scope" {
+				t.Fatalf("rows = %v, want one allowed/declared_scope", got)
+			}
+		})
+	}
+}
+
+// Only the operator's own rows authorize: the agent can write 'agent' rows and
+// an inserted asset implies 'auto' ones, so the gate keeps neither. The scope
+// kinds that name no address cover nothing either.
+func TestDeclaredCoversKeepsOnlyOperatorRows(t *testing.T) {
+	ct := &checkedTarget{Target: Target{Kind: TargetDomain, Host: "app.example.com", Port: 443}, ips: []string{"203.0.113.7"}}
+	for _, tc := range []struct {
+		name string
+		rows []db.TaskScope
+		want bool
+	}{
+		{"manual root domain", []db.TaskScope{{Kind: "root_domain", Domain: "example.com", Source: "manual"}}, true},
+		{"manual subdomain", []db.TaskScope{{Kind: "subdomain", Domain: "app.example.com", Source: "manual"}}, true},
+		{"manual cidr", []db.TaskScope{{Kind: "cidr", Net: "203.0.113.0/24", Source: "manual"}}, true},
+		{"agent row", []db.TaskScope{{Kind: "root_domain", Domain: "example.com", Source: "agent"}}, false},
+		{"auto row", []db.TaskScope{{Kind: "root_domain", Domain: "example.com", Source: "auto"}}, false},
+		{"other domain", []db.TaskScope{{Kind: "root_domain", Domain: "example.org", Source: "manual"}}, false},
+		{"sibling name", []db.TaskScope{{Kind: "subdomain", Domain: "other.example.com", Source: "manual"}}, false},
+		{"company row names no address", []db.TaskScope{{Kind: "company", Source: "manual"}}, false},
+		{"keyword row names no address", []db.TaskScope{{Kind: "keyword", Value: "example.com", Source: "manual"}}, false},
+		{"no rows", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := declaredCovers(tc.rows, ct); got != tc.want {
+				t.Fatalf("declaredCovers = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Declaring a domain does not lift a block rule that names it: the rules are
+// matched before anything else, for every target of the call.
+func TestPinnedDialBlockRuleBeatsDeclaredScope(t *testing.T) {
+	g, rec := dialGate(t)
+	srv, hits, port := pinnedServer(t, "blocked")
+	g.store.declared = []db.TaskScope{{Kind: "root_domain", Domain: "example.com", Source: "manual"}}
+	g.store.rules = []db.AssetInterceptRule{{Enabled: true, Kind: "exact_domain", Pattern: "app.example.com"}}
+	g.res.set("app.example.com", "203.0.113.7")
+	rec.route("203.0.113.7:"+port, srv.Listener.Addr().String())
+
+	_, err := PinnedDialer("WebFetch", true)(g.ctx(), "tcp", "app.example.com:"+port)
+	if err == nil || !strings.Contains(err.Error(), TargetRuleBlocked) {
+		t.Fatalf("dial: %v, want TARGET_RULE_BLOCKED", err)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("%d requests reached the server", hits.Load())
+	}
+	if got := rec.calls(); len(got) != 0 {
+		t.Fatalf("dialled %v", got)
+	}
+}

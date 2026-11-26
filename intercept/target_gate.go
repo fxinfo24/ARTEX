@@ -39,6 +39,10 @@ type targetStore interface {
 	// ActivePins returns the active pins that may cover (host, port) in scope,
 	// the pin on the exact port first.
 	ActivePins(scope db.TargetScopeRef, host string, port int) ([]*db.TargetPin, error)
+	// DeclaredScope returns the task's scope rows. The gate keeps the ones the
+	// operator declared (source='manual'): the agent can write 'agent' rows and an
+	// inserted asset implies 'auto' ones, so neither may authorize a connection.
+	DeclaredScope(scope db.TargetScopeRef) ([]db.TaskScope, error)
 	// Exemptions returns the stored exemption list and its digest.
 	Exemptions() ([]db.TargetExemption, string, error)
 	// LogDecision records an outcome no human took.
@@ -61,6 +65,10 @@ func (s dbTargetStore) BlockRules(scope db.TargetScopeRef) ([]db.AssetInterceptR
 
 func (s dbTargetStore) ActivePins(scope db.TargetScopeRef, host string, port int) ([]*db.TargetPin, error) {
 	return s.d.ActiveTargetPins(scope, host, port)
+}
+
+func (s dbTargetStore) DeclaredScope(scope db.TargetScopeRef) ([]db.TaskScope, error) {
+	return s.d.DeclaredScopeRows(scope.TaskID)
 }
 
 func (s dbTargetStore) Exemptions() ([]db.TargetExemption, string, error) {
@@ -125,6 +133,7 @@ const (
 	coverStored   = "stored"    // a stored exemption that holds
 	coverPin      = "pin"       // a pin that holds every resolved address
 	coverNameOnly = "name_only" // a pin that is name-only for this call
+	coverDeclared = "declared"  // the scope the operator declared covers it
 )
 
 // checkedTarget is one target of the call and what the gate learned about it.
@@ -218,6 +227,8 @@ func (c *targetCheck) run(targets []Target) ([]TargetRequest, TargetResult) {
 
 	var unpinned []TargetRequest
 	var uses []func()
+	var declared []db.TaskScope
+	var declaredRead bool
 	for _, ct := range checked {
 		key := db.TargetKey(ct.Host, ct.Port)
 		if ex.derived[key] {
@@ -242,6 +253,19 @@ func (c *targetCheck) run(targets []Target) ([]TargetRequest, TargetResult) {
 			return c.block(TargetGateUnavailable, "gate_unavailable", ct, "the pins could not be read: "+err.Error())
 		}
 		pin := coveringPin(pins, ct.ips, nameOnly)
+		if pin == nil && !declaredRead {
+			// Read the operator's declared scope once per decision, and only when a
+			// pin did not already cover the target.
+			declaredRead = true
+			if declared, err = i.targets.DeclaredScope(c.ref); err != nil {
+				return c.block(TargetGateUnavailable, "gate_unavailable", ct, "the declared scope could not be read: "+err.Error())
+			}
+		}
+		if pin == nil && declaredCovers(declared, ct) {
+			ct.cover = coverDeclared
+			uses = append(uses, func() { c.declaredUsed(ct) })
+			continue
+		}
 		if pin == nil && ct.Kind == TargetDomain && !c.fresh {
 			// A request is about to be raised: the addresses a human reads and
 			// pins are resolved now, never taken from the cache. A fresh run
@@ -359,6 +383,41 @@ func (c *targetCheck) pinUsed(ct *checkedTarget, pin *db.TargetPin, nameOnly boo
 	t := ct.audit("pin_match")
 	t.PinID, t.PinVersion, t.PinnedIPs, t.NameOnlyEffective = pin.ID, pin.Version, pin.PinnedIPs, pin.NameOnlyEffective || nameOnly
 	c.log("allowed", fmt.Sprintf("Target %s is covered by pin v%d of %s.", ct.Target, pin.Version, c.scope.scopeName()), "", t)
+}
+
+// declaredCovers reports whether a scope row the operator declared covers the
+// target, on the addresses this decision compared. Entries the agent added and
+// the scope an inserted asset implied are coverage, not authorization: the agent
+// can write those itself, so a connection is never opened on their word alone.
+func declaredCovers(rows []db.TaskScope, ct *checkedTarget) bool {
+	if len(rows) == 0 {
+		return false
+	}
+	ips := ct.ips
+	if len(ips) == 0 {
+		ips = []string{""}
+	}
+	for _, r := range rows {
+		if r.Source != "manual" {
+			continue
+		}
+		for _, ip := range ips {
+			if db.ScopeCoversHost(r, ct.Host, ip) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// declaredUsed records, once per process and target, that the declared scope let
+// a connection pass without a pin.
+func (c *targetCheck) declaredUsed(ct *checkedTarget) {
+	key := fmt.Sprintf("declared|%d|%s", c.ref.TaskID, db.TargetKey(ct.Host, ct.Port))
+	if _, seen := c.i.firstUse.LoadOrStore(key, true); seen {
+		return
+	}
+	c.log("allowed", fmt.Sprintf("Target %s is in the scope %s declared.", ct.Target, c.scope.scopeName()), "", ct.audit("declared_scope"))
 }
 
 // blockRule matches the asset block rules against a target: its name, and its
