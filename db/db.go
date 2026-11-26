@@ -109,16 +109,23 @@ func DSN() (dsn, source string, err error) {
 	return config.PostgresDSN()
 }
 
-// SuffixTestDatabase rewrites the ARTEX_PG_DSN environment variable so its
-// database name carries the given suffix (artex -> artex_agent). Called from
-// package TestMain functions so every go test package runs against its own
-// database: parallel package processes then cannot contend on the same tables
-// (the under-load deadlock family, #80). No-op when ARTEX_PG_DSN is unset —
+// SuffixTestDatabase rewrites the configured database name so it carries the
+// given suffix (artex -> artex_agent). Called from package TestMain functions so
+// every go test package runs against its own database: parallel package
+// processes then cannot contend on the same tables (the under-load deadlock
+// family, #80). Both ways of naming the database are rewritten — ARTEX_PG_DSN,
+// and ARTEX_PG_DBNAME for the component variables — so the isolation does not
+// depend on which form the environment uses. No-op when neither is set:
 // config-file and production paths are untouched. Open creates the suffixed
 // database automatically (ensureDatabase).
 func SuffixTestDatabase(suffix string) {
 	v := strings.TrimSpace(os.Getenv("ARTEX_PG_DSN"))
 	if v == "" {
+		// The component form: rename the database, leaving the host, port, user
+		// and password as configured.
+		if name := strings.TrimSpace(os.Getenv("ARTEX_PG_DBNAME")); name != "" {
+			_ = os.Setenv("ARTEX_PG_DBNAME", name+"_"+suffix)
+		}
 		return
 	}
 	u, err := url.Parse(v)

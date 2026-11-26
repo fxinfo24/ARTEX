@@ -71,3 +71,27 @@ func skipWithoutDSN(t *testing.T) {
 		db.SkipPGUnavailable(t, err)
 	}
 }
+
+// preserveSecretEnv restores the environment names New's secret scrub removes, so
+// a test that exercises WithSecretScrub does not strip ARTEX_PG_PASSWORD,
+// ARTEX_PG_DSN or ARTEX_SECRET_KEY from every test that runs after it in this
+// process. The scrub is process-wide and has no undo of its own.
+func preserveSecretEnv(t *testing.T) {
+	t.Helper()
+	saved := make(map[string]string, len(secretEnv))
+	present := make(map[string]bool, len(secretEnv))
+	for _, k := range secretEnv {
+		if v, ok := os.LookupEnv(k); ok {
+			saved[k], present[k] = v, true
+		}
+	}
+	t.Cleanup(func() {
+		for _, k := range secretEnv {
+			if present[k] {
+				_ = os.Setenv(k, saved[k])
+				continue
+			}
+			_ = os.Unsetenv(k)
+		}
+	})
+}

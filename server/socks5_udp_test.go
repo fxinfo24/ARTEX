@@ -91,6 +91,13 @@ func TestManagerSOCKS5UDPOptInAndAssetBlockRuleDropsDatagram(t *testing.T) {
 		return ln, &n
 	}
 
+	// The block rule distinguishes destinations by address, so the blocked endpoint
+	// needs a second loopback address. Linux binds all of 127/8; macOS binds only
+	// 127.0.0.1 unless an alias is added, so there the per-datagram rule cannot be
+	// exercised and the test says so instead of failing on a bind error.
+	if !loopbackAliasAvailable("127.0.0.2") {
+		t.Skip("this host binds no second 127/8 address (macOS); the per-datagram block rule needs one")
+	}
 	blockedLn, blockedCount := startEcho("127.0.0.2:0")
 	allowedLn, allowedCount := startEcho("127.0.0.1:0")
 	blockedAddr := blockedLn.LocalAddr().(*net.UDPAddr)
@@ -177,4 +184,20 @@ func TestManagerSOCKS5UDPOptInAndAssetBlockRuleDropsDatagram(t *testing.T) {
 	if nAllowed, err := mOn.traffic.CountRawUDPDatagrams("", "127.0.0.1"); err != nil || nAllowed != 2 {
 		t.Fatalf("allowed host recorded %d rows (err=%v), want 2", nAllowed, err)
 	}
+}
+
+// loopbackAliasAvailable reports whether this host can bind addr on UDP. It is
+// how a test tells a platform that binds all of 127/8 (Linux) from one that
+// binds only 127.0.0.1 (macOS).
+func loopbackAliasAvailable(addr string) bool {
+	ua, err := net.ResolveUDPAddr("udp4", addr+":0")
+	if err != nil {
+		return false
+	}
+	ln, err := net.ListenUDP("udp4", ua)
+	if err != nil {
+		return false
+	}
+	_ = ln.Close()
+	return true
 }

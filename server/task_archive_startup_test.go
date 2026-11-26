@@ -14,6 +14,7 @@ import (
 )
 
 func TestArchiveStoreLoadsCredentialsBeforeSecretScrub(t *testing.T) {
+	preserveSecretEnv(t)
 	skipWithoutDSN(t)
 	// New scrubs all startup secrets; restore the test database/key environment
 	// afterward so the remaining package tests keep their isolated configuration.
@@ -84,6 +85,7 @@ func TestArchiveStoreLoadsCredentialsBeforeSecretScrub(t *testing.T) {
 // sensitive as the override: after startup no child process may inherit them,
 // and the S3 client built before the scrub must keep signing with them.
 func TestReview318AmbientAWSCredentialsScrubbedAfterArchiveInit(t *testing.T) {
+	preserveSecretEnv(t)
 	skipWithoutDSN(t)
 	sh, err := exec.LookPath("sh")
 	if err != nil {

@@ -61,6 +61,7 @@ func TestScrubSecretEnvClearsBedrockGatewayCredentials(t *testing.T) {
 // ...Option and never called them, so the binary kept the secrets in the
 // environment while the unit test above still passed.
 func TestNewAppliesSecretScrubOption(t *testing.T) {
+	preserveSecretEnv(t)
 	// t.Setenv restores both after the test: the scrub unsets them for the rest
 	// of this process, and later tests still need the DSN.
 	if dsn := os.Getenv("ARTEX_PG_DSN"); dsn != "" {
