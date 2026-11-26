@@ -246,11 +246,15 @@ BEGIN
         );
     END IF;
 END $$;
-CREATE INDEX IF NOT EXISTS idx_expnodes_part     ON exploration_nodes(exploration_id, kind);
 -- The per-turn graph overview reads the newest window of several kinds at once
 -- (db.NodeWindows): this ordering index serves each window without sorting the
 -- kind, which is what the overview did before on graphs of tens of thousands of rows.
 CREATE INDEX IF NOT EXISTS idx_expnodes_kind_id  ON exploration_nodes(exploration_id, kind, id DESC);
+-- The (exploration_id, kind) index this replaces is a strict prefix of it, so
+-- every lookup it served is served by the wider index; keeping both only paid
+-- for a second index on every node write. Existing installs drop it here, after
+-- the replacement exists.
+DROP INDEX IF EXISTS idx_expnodes_part;
 CREATE INDEX IF NOT EXISTS idx_expnodes_frontier ON exploration_nodes(exploration_id, priority DESC)
     WHERE kind='intent' AND state='open';
 DROP TRIGGER IF EXISTS trg_expnodes_upd ON exploration_nodes;
