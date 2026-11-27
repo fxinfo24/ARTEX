@@ -2357,7 +2357,7 @@
   "The task is directly inherited by unarchived task #{id}; archive the dependent task first": "未归档的任务 #{id} 直接继承了此任务；请先归档依赖任务",
   "The two new passwords do not match": "两次输入的新密码不一致",
   "The two passwords do not match": "两次输入的密码不一致",
-  "The username is fixed as {username}. Enter the current password to verify; login tokens issued before the change stay valid until they expire.": "用户名固定为 {username}。请输入当前密码进行验证；修改前签发的登录令牌在到期前仍然有效。",
+  "The username is fixed as {username}. Enter the current password to verify. The change signs out every other session; this one continues with the new password.": "用户名固定为 {username}。请输入当前密码进行验证。此更改会退出其他所有会话，当前会话会继续使用新密码。",
   "Theme Mode": "主题模式",
   "Theme Preset": "主题预设",
   "These task-level rules are prefilled when the template is applied (intercept/allow, effective only for new tasks, never global).": "应用模板时预填这些任务级规则（拦截/允许，仅对新任务生效，不进全局）。",

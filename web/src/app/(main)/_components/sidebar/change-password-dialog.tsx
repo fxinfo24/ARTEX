@@ -16,6 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { t } from "@/i18n";
+import { auth } from "@/lib/auth";
 import { api } from "@/lib/api";
 
 export function ChangePasswordDialog({
@@ -52,7 +53,11 @@ export function ChangePasswordDialog({
     setSaving(true);
     api
       .changePassword(oldPassword, newPassword)
-      .then(() => {
+      .then((res) => {
+        // The change rotated the password version and revoked every session, this
+        // one included; the response carries its replacement, so keep it or the
+        // next API call would bounce the operator to /login.
+        if (res?.token) auth.setToken(res.token);
         toast.success(t("Password changed"));
         onOpenChange(false);
       })
@@ -62,7 +67,7 @@ export function ChangePasswordDialog({
 
   // The username stays bold; it is placed through a placeholder so the sentence is translated whole.
   const [descBefore, descAfter = ""] = t(
-    "The username is fixed as {username}. Enter the current password to verify; login tokens issued before the change stay valid until they expire.",
+    "The username is fixed as {username}. Enter the current password to verify. The change signs out every other session; this one continues with the new password.",
   ).split("{username}");
 
   return (

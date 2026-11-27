@@ -292,8 +292,10 @@ export const api = {
   login: (username: string, password: string) => post<{ token: string }>("/auth/login", { username, password }),
   initPassword: (password: string, setupToken: string) =>
     post<{ token: string }>("/auth/init", { password, setup_token: setupToken }),
+  // The server rotates the password version, so every session dies with the old one;
+  // the response carries the caller's replacement token and this one keeps working.
   changePassword: (oldPassword: string, newPassword: string) =>
-    post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
+    post<{ ok: boolean; token?: string }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
 
   // ---- tasks ----
   tasks: (companyId: number | null = null) =>

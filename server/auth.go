@@ -585,7 +585,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Hash and version commit together. A failed write returns 500 and leaves
-	// the previous session valid. This response has no replacement token.
+	// the previous session valid.
 	version, err := pg.RotatePassword(s.passwordHashKey(), string(newHash), s.passwordVersionKey())
 	if err != nil {
 		writeErr(w, 500, "Save failed: "+err.Error())
@@ -593,7 +593,17 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	s.passwordChangeReset(r)
 	s.applyPasswordVersion(version)
-	writeJSON(w, 200, map[string]any{"ok": true})
+	// The token that made this request was bound to the version just replaced, so
+	// the rotation voided it along with every other session. The caller has proved
+	// both the old password and possession of the session, so hand back a token for
+	// the new version: signing in again would only ask for the password they just
+	// chose, and every other session still dies because it holds the old version.
+	tok, err := signJWTVersion(s.jwtKey, version)
+	if err != nil {
+		writeErr(w, 500, "token generation failed")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "token": tok})
 }
 
 // passwordChangeWait records one authenticated change-password attempt against

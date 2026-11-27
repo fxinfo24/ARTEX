@@ -96,6 +96,18 @@ func TestChangePasswordRevokesOldTokenAndKeepsItWhenSaveFails(t *testing.T) {
 	if s.sessionOK(issued.Token) {
 		t.Fatal("token from before the password change is still accepted")
 	}
+	var replaced struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &replaced); err != nil || replaced.Token == "" {
+		t.Fatalf("change-password returned no replacement token: %v body=%s", err, w.Body.String())
+	}
+	if replaced.Token == issued.Token {
+		t.Fatal("replacement token is the revoked one")
+	}
+	if !s.sessionOK(replaced.Token) {
+		t.Fatal("replacement token from change-password was rejected")
+	}
 
 	w = httptest.NewRecorder()
 	s.authLogin(w, httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(`{"username":"ARTEX","password":"correct-horse-2"}`)))
