@@ -1,6 +1,9 @@
 package db
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestCoverageEnabledWithoutTask(t *testing.T) {
 	on, err := (&AssetStore{}).CoverageEnabled(0)
@@ -52,5 +55,54 @@ func TestStripHostPort(t *testing.T) {
 		if got := stripHostPort(c.in); got != c.want {
 			t.Errorf("stripHostPort(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// TestAddAgentScopeReturnsStoredID: the create path answers with the row it wrote.
+// It used to return the struct it built, whose ID was never set, so the API
+// answered id=0 and a client could not delete the row it had just added; a repeat
+// add (ON CONFLICT DO NOTHING) must still answer with the existing row's id.
+func TestAddAgentScopeReturnsStoredID(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		SkipPGUnavailable(t, err)
+	}
+	// Cleanups run last-in-first-out, so closing is registered first: the task
+	// cleanup below still needs the connection.
+	t.Cleanup(func() { _ = d.Close() })
+	task, err := d.CreateTaskWithOptions("scope id", "goal", TaskCreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cleanupErr(t, "task", d.DeleteTask(task.ID)) })
+	assets := d.Assets()
+	domain := fmt.Sprintf("scope-id-%d.invalid", task.ID)
+
+	first, err := assets.AddAgentScope(task.ID, "root_domain", domain, "test", "manual")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID <= 0 {
+		t.Fatalf("AddAgentScope returned id=%d, want the stored row id", first.ID)
+	}
+	rows, err := assets.ListTaskScope(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, r := range rows {
+		if r.ID == first.ID && r.Domain == domain && r.Source == "manual" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("id %d does not name a stored %q scope row: %+v", first.ID, domain, rows)
+	}
+	again, err := assets.AddAgentScope(task.ID, "root_domain", domain, "duplicate", "manual")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != first.ID {
+		t.Fatalf("repeat add returned id=%d, want the existing row id %d", again.ID, first.ID)
 	}
 }

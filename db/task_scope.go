@@ -235,7 +235,40 @@ func (s *AssetStore) AddAgentScope(taskID int64, kind, value, reason, source str
 	if err := s.upsertTaskScope(ts); err != nil {
 		return ts, err
 	}
+	// The insert reports no key, and ON CONFLICT DO NOTHING means a repeat add
+	// touches no row at all. Callers delete a scope row by its id, so a create that
+	// answered id=0 left them with nothing to delete; read the row back instead.
+	id, err := s.taskScopeID(ts)
+	if err != nil {
+		return ts, err
+	}
+	ts.ID = id
 	return ts, nil
+}
+
+// taskScopeID returns the id of the row ts describes, addressed by the same
+// columns as uq_task_scope_v2. net and value are matched through their stored
+// text forms so a caller-supplied CIDR compares as the type stores it.
+func (s *AssetStore) taskScopeID(ts TaskScope) (int64, error) {
+	var companyID int64
+	if ts.CompanyID != nil {
+		companyID = *ts.CompanyID
+	}
+	const q = `
+SELECT id FROM task_scope
+WHERE task_id = $1 AND kind = $2
+  AND COALESCE(domain, '') = $3
+  AND COALESCE(net::text, '') = COALESCE(NULLIF($4, '')::cidr::text, '')
+  AND COALESCE(company_id, 0) = $5
+  AND COALESCE(value, '') = $6`
+	var id int64
+	var err error
+	if s.tx != nil {
+		err = s.tx.QueryRow(q, ts.TaskID, ts.Kind, ts.Domain, ts.Net, companyID, ts.Value).Scan(&id)
+	} else {
+		err = s.db.QueryRow(q, ts.TaskID, ts.Kind, ts.Domain, ts.Net, companyID, ts.Value).Scan(&id)
+	}
+	return id, err
 }
 
 // isScopeExpansion reports whether adding candidate widens an already-declared
