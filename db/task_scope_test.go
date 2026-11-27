@@ -106,3 +106,66 @@ func TestAddAgentScopeReturnsStoredID(t *testing.T) {
 		t.Fatalf("repeat add returned id=%d, want the existing row id %d", again.ID, first.ID)
 	}
 }
+
+// TestDeclaredScopeRowsIgnoresAgentRows guards the boundary the connect-time
+// target gate depends on: only operator declarations authorize a dial. The agent
+// can write its own scope rows (source='agent'), and if DeclaredScopeRows ever
+// stopped filtering them the agent could authorize any target by declaring it
+// first — the gate would then never ask the operator.
+func TestDeclaredScopeRowsIgnoresAgentRows(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		SkipPGUnavailable(t, err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	task, err := d.CreateTaskWithOptions("declared scope", "goal", TaskCreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cleanupErr(t, "task", d.DeleteTask(task.ID)) })
+	assets := d.Assets()
+
+	declared := fmt.Sprintf("declared-%d.invalid", task.ID)
+	selfDeclared := fmt.Sprintf("agent-%d.invalid", task.ID)
+	if _, err := assets.AddAgentScope(task.ID, "root_domain", declared, "operator decision", "manual"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := assets.AddAgentScope(task.ID, "root_domain", selfDeclared, "agent decided this itself", "agent"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Control: both rows exist, so an empty DeclaredScopeRows result below cannot be
+	// explained by a failed insert.
+	all, err := assets.ListTaskScope(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("stored scope rows = %d, want 2 (the test needs the agent row to exist)", len(all))
+	}
+
+	rows, err := d.DeclaredScopeRows(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("DeclaredScopeRows returned %d rows, want only the operator's: %+v", len(rows), rows)
+	}
+	if rows[0].Domain != declared {
+		t.Fatalf("DeclaredScopeRows returned %q, want the operator's %q (the agent row must not authorize a target)", rows[0].Domain, declared)
+	}
+	if rows[0].Source != "manual" {
+		t.Fatalf("declared row source = %q, want manual", rows[0].Source)
+	}
+	for _, r := range rows {
+		if r.Domain == selfDeclared {
+			t.Fatal("an agent-written scope row reached the gate's declared set: the agent would authorize its own targets")
+		}
+	}
+
+	// ScopeCoversHost still says the agent row covers the host — the filter, not the
+	// matcher, is what keeps it out of authorization.
+	if !ScopeCoversHost(TaskScope{Kind: "root_domain", Domain: selfDeclared}, selfDeclared, "") {
+		t.Fatal("ScopeCoversHost should cover its own domain; the exclusion belongs to DeclaredScopeRows")
+	}
+}
