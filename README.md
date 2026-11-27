@@ -399,6 +399,31 @@ The image includes a scanner toolchain (`nmap`, `nuclei`, `httpx`, `katana`, `ff
 persists `./keys` and `./data`; it does not mount a host `skills/` directory, so the image's
 built-in skills are used.
 
+#### Docker Desktop on macOS
+
+`docker-compose.yml` binds `data/`, `keys/` and `skills/` from the checkout. Docker Desktop's file
+sharing reports permissive modes on those bind mounts, which fails ARTEX's agent-isolation self-test
+at startup. Use named volumes on macOS instead, with a local `docker-compose.override.yml` that
+Compose applies automatically (Compose v2.24.4 or newer, for the `!override` tag):
+
+```yaml
+services:
+  artex:
+    volumes: !override
+      - artex_data:/app/data
+      - artex_keys:/app/keys
+      - artex_skills:/app/skills
+
+volumes:
+  artex_data:
+  artex_keys:
+  artex_skills:
+```
+
+The file is in `.gitignore`, so it stays machine-local. The trade-off is that runtime data then
+lives in Docker volumes rather than `./data` and `./keys`; read it with
+`docker compose cp artex:/app/data ./data` rather than from the checkout.
+
 #### Compose stack from the prebuilt image
 
 `docker-compose.ghcr.yml` runs the same ARTEX + PostgreSQL stack from the released image, with no
