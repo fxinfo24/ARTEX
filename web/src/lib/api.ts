@@ -152,7 +152,11 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers as Record<string, string> | undefined),
     },
   });
-  if (r.status === 401) {
+  // A 401 means the session expired only when a session was attached. Without one
+  // the request simply was not authorized — a failed /auth/login is the case that
+  // matters here: clearing state and navigating would reload the login page and
+  // throw away the message the form is about to show.
+  if (r.status === 401 && token) {
     if (typeof window !== "undefined") {
       localStorage.removeItem("artex_token");
       document.cookie = "artex_token=; path=/; max-age=0";
