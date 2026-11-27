@@ -92,6 +92,21 @@ func BudgetsFromEnv() (task, intent Budget) {
 		NewBudget(env("ARTEX_INTENT_BUDGET_TOKENS"), env("ARTEX_INTENT_BUDGET_TURNS"))
 }
 
+// BudgetsFromEnvForTask is BudgetsFromEnv with the per-task override a task can
+// carry from creation: a positive tokens or turns value on the task wins over the
+// process-wide task budget, 0 means inherit the env setting. The intent budget has
+// no per-task form — it is always derived from the task's own cap.
+func BudgetsFromEnvForTask(taskTokens, taskTurns int64) (task, intent Budget) {
+	task, intent = BudgetsFromEnv()
+	if taskTokens > 0 {
+		task.Tokens = taskTokens
+	}
+	if taskTurns > 0 {
+		task.Turns = taskTurns
+	}
+	return task, intent
+}
+
 // BudgetLedger meters one task. The total is restored from llm_usage when the
 // ledger is created, including after a restart. Per-worker averages are not.
 type BudgetLedger struct {

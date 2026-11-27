@@ -1767,6 +1767,11 @@ type createTaskReq struct {
 	TargetGate           *bool    `json:"target_gate,omitempty"`       // approval gate for asset targets, opt-in; omitted/null = off
 	SeedFirstIntent      *bool    `json:"seed_first_intent,omitempty"` // issue one seed intent at creation (content = description + goal) so a worker can start right away without waiting for the first planner round; omitted/null = default off, the standard plan-then-execute flow. Pass true explicitly to enable (for CTF tasks often solved in one work, this skips the pre-start planner round).
 	CoverageEnabled      *bool    `json:"coverage_enabled,omitempty"`  // asset coverage feature; omitted/null = default on (true). false = disables coverage calculation/display/auto-accumulated scope + hides add_task_scope/list_untested_assets. company links are unaffected.
+	// BudgetTokens/BudgetTurns cap this task's run budget (agent run budget, see
+	// agent/budget.go). 0/omitted = inherit ARTEX_TASK_BUDGET_* process-wide, which
+	// is what every task did before these fields existed.
+	BudgetTokens int64 `json:"budget_tokens,omitempty"`
+	BudgetTurns  int64 `json:"budget_turns,omitempty"`
 	// InterceptRules: task-level asset interception/allow rules (entered at creation, stored in task_intercept_rules, never the global table).
 	InterceptRules []taskInterceptRuleReq `json:"intercept_rules,omitempty"`
 	// Credentials: test accounts declared at creation (#3). An empty password means
@@ -1795,6 +1800,10 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.validateTaskProfileIDs(req.LLMProfileIDs); err != nil {
 		writeErr(w, 400, err.Error())
+		return
+	}
+	if req.BudgetTokens < 0 || req.BudgetTurns < 0 {
+		writeErr(w, 400, "budget_tokens and budget_turns must not be negative (0 = inherit the process-wide budget)")
 		return
 	}
 	if err := goalGateCheck(req.Goal); err != nil {
@@ -1839,6 +1848,8 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		SourceTaskIDs: sourceIDs, CompanyIDs: req.CompanyIDs, LLMProfileIDs: req.LLMProfileIDs,
 		TimeoutSeconds: req.TimeoutSeconds, PlanHeartbeatSeconds: req.PlanHeartbeatSeconds, PlanQuietMode: req.PlanQuietMode,
 		CoverageEnabled: req.CoverageEnabled,
+		BudgetTokens:    req.BudgetTokens,
+		BudgetTurns:     req.BudgetTurns,
 		InterceptRules:  interceptRules,
 		LLMRotate:       req.LLMRotate,
 		TargetGate:      req.TargetGate,

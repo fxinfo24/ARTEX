@@ -62,8 +62,10 @@ type TaskDTO struct {
 	ArchiveBlockedBy   string             `json:"archive_blocked_by_task_id,omitempty"`
 	CompanyIDs         []int64            `json:"company_ids"`
 	CoverageEnabled    bool               `json:"coverage_enabled"` // asset coverage feature switch (fixed at creation)
-	PlanQuietMode      bool               `json:"plan_quiet_mode"`  // planner quiet-mode switch (#86), editable mid-run
-	TargetGate         bool               `json:"target_gate"`      // approval gate for asset targets, opt-in, editable mid-run
+	BudgetTokens       int64              `json:"budget_tokens"`    // per-task run budget; 0 = inherit ARTEX_TASK_BUDGET_*
+	BudgetTurns        int64              `json:"budget_turns"`
+	PlanQuietMode      bool               `json:"plan_quiet_mode"` // planner quiet-mode switch (#86), editable mid-run
+	TargetGate         bool               `json:"target_gate"`     // approval gate for asset targets, opt-in, editable mid-run
 }
 
 // FindingSeverityDTO is the per-severity finding count shown in the task list (critical/high/medium/low).
@@ -145,8 +147,9 @@ func taskDTO(t *Task, status string) TaskDTO {
 		SourceTaskIDs:      sourceIDs,
 		CompanyIDs:         lifecycle.CompanyIDs,
 		CoverageEnabled:    t.CoverageEnabled,
-		PlanQuietMode:      t.PlanQuietMode,
-		TargetGate:         t.targetGate.Load(),
+		BudgetTokens:       t.BudgetTokens, BudgetTurns: t.BudgetTurns,
+		PlanQuietMode: t.PlanQuietMode,
+		TargetGate:    t.targetGate.Load(),
 	}
 }
 

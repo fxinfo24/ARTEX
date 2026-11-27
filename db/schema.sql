@@ -551,6 +551,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     plan_heartbeat_seconds INTEGER NOT NULL DEFAULT 300,
     plan_quiet_mode BOOLEAN NOT NULL DEFAULT true,
     coverage_enabled BOOLEAN NOT NULL DEFAULT true,
+    budget_tokens  BIGINT NOT NULL DEFAULT 0,
+    budget_turns   BIGINT NOT NULL DEFAULT 0,
     pinned_at      TIMESTAMPTZ,
     first_run_at   TIMESTAMPTZ,
     deadline_at    TIMESTAMPTZ,

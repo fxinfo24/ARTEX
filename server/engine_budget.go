@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"log"
+	"strconv"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/llmrec"
@@ -17,13 +18,34 @@ func (e *Engine) budgetFor(taskID string) *agent.BudgetLedger {
 	if v, ok := e.budgets.Load(taskID); ok {
 		return v.(*agent.BudgetLedger)
 	}
-	created := agent.NewBudgetLedger(agent.BudgetsFromEnv())
+	tokens, turns := e.taskBudget(taskID)
+	created := agent.NewBudgetLedger(agent.BudgetsFromEnvForTask(tokens, turns))
 	e.seedBudget(taskID, created)
 	v, loaded := e.budgets.LoadOrStore(taskID, created)
 	if loaded {
 		return v.(*agent.BudgetLedger)
 	}
 	return created
+}
+
+// taskBudget reads the budget recorded on the task at creation. 0 (or any read
+// failure) means "inherit the process-wide setting", which is what the ledger did
+// before per-task budgets existed, so a database hiccup cannot silently lift a
+// cap a task was created with — the ledger only gets an override when the row
+// says so.
+func (e *Engine) taskBudget(taskID string) (tokens, turns int64) {
+	if e == nil || e.m == nil || e.m.pg == nil || taskID == "" {
+		return 0, 0
+	}
+	id, err := strconv.ParseInt(taskID, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, 0
+	}
+	t, err := e.m.pg.GetTask(id)
+	if err != nil || t == nil {
+		return 0, 0
+	}
+	return t.BudgetTokens, t.BudgetTurns
 }
 
 // seedBudget rebuilds spent tokens and turns from llm_usage for every new
