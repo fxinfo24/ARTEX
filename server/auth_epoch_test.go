@@ -49,13 +49,16 @@ func TestPasswordVersionClaim(t *testing.T) {
 	}
 }
 
-func TestChangePasswordRevokesOldTokenAndKeepsItWhenSaveFails(t *testing.T) {
+// authTestServer builds a Server whose password keys are unique to one test, with
+// fresh login and password-change limiters, so tests never share stored state.
+func authTestServer(t *testing.T) *Server {
+	t.Helper()
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {
 		db.SkipPGUnavailable(t, err)
 	}
-	defer m.Close()
-
+	// Registered first so it runs last: the settings cleanup below needs the pool.
+	t.Cleanup(func() { m.Close() })
 	stamp := time.Now().UnixNano()
 	s := &Server{
 		m:              m,
@@ -68,11 +71,17 @@ func TestChangePasswordRevokesOldTokenAndKeepsItWhenSaveFails(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = m.pg.Exec(`DELETE FROM settings WHERE key=$1 OR key=$2`, s.authHashKey, s.authVersionKey)
 	})
+	return s
+}
 
+// initPassword sets the first password through the setup path and returns the
+// session token it issues.
+func initPassword(t *testing.T, s *Server, password string) string {
+	t.Helper()
 	s.setupToken = "setup-ok"
-	initBody := `{"password":"correct-horse-1","setup_token":"setup-ok"}`
 	w := httptest.NewRecorder()
-	s.authInit(w, httptest.NewRequest("POST", "/api/auth/init", strings.NewReader(initBody)))
+	body := fmt.Sprintf(`{"password":%q,"setup_token":"setup-ok"}`, password)
+	s.authInit(w, httptest.NewRequest("POST", "/api/auth/init", strings.NewReader(body)))
 	if w.Code != 200 {
 		t.Fatalf("init status=%d body=%s", w.Code, w.Body.String())
 	}
@@ -85,15 +94,41 @@ func TestChangePasswordRevokesOldTokenAndKeepsItWhenSaveFails(t *testing.T) {
 	if !s.sessionOK(issued.Token) {
 		t.Fatal("token from init was rejected")
 	}
+	return issued.Token
+}
 
-	change := httptest.NewRequest("POST", "/api/auth/change-password", strings.NewReader(`{"old_password":"correct-horse-1","new_password":"correct-horse-2"}`))
-	change.Header.Set("Authorization", "Bearer "+issued.Token)
-	w = httptest.NewRecorder()
-	s.authChangePassword(w, change)
+// changePassword posts a change as the caller holding token.
+func changePassword(s *Server, token, oldPW, newPW string) *httptest.ResponseRecorder {
+	body := fmt.Sprintf(`{"old_password":%q,"new_password":%q}`, oldPW, newPW)
+	req := httptest.NewRequest("POST", "/api/auth/change-password", strings.NewReader(body))
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	s.authChangePassword(w, req)
+	return w
+}
+
+// login posts a login attempt and returns the recorder.
+func login(s *Server, username, password string) *httptest.ResponseRecorder {
+	body := fmt.Sprintf(`{"username":%q,"password":%q}`, username, password)
+	w := httptest.NewRecorder()
+	s.authLogin(w, httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(body)))
+	return w
+}
+
+// TestChangePasswordRevokesOldToken: a successful change ends the session that
+// asked for it and hands back one for the new version, and only the new password
+// logs in afterwards.
+func TestChangePasswordRevokesOldToken(t *testing.T) {
+	s := authTestServer(t)
+	issued := initPassword(t, s, "correct-horse-1")
+
+	w := changePassword(s, issued, "correct-horse-1", "correct-horse-2")
 	if w.Code != 200 {
 		t.Fatalf("change status=%d body=%s", w.Code, w.Body.String())
 	}
-	if s.sessionOK(issued.Token) {
+	if s.sessionOK(issued) {
 		t.Fatal("token from before the password change is still accepted")
 	}
 	var replaced struct {
@@ -102,62 +137,130 @@ func TestChangePasswordRevokesOldTokenAndKeepsItWhenSaveFails(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &replaced); err != nil || replaced.Token == "" {
 		t.Fatalf("change-password returned no replacement token: %v body=%s", err, w.Body.String())
 	}
-	if replaced.Token == issued.Token {
+	if replaced.Token == issued {
 		t.Fatal("replacement token is the revoked one")
 	}
 	if !s.sessionOK(replaced.Token) {
 		t.Fatal("replacement token from change-password was rejected")
 	}
 
-	w = httptest.NewRecorder()
-	s.authLogin(w, httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(`{"username":"ARTEX","password":"correct-horse-2"}`)))
-	if w.Code != 200 {
-		t.Fatalf("login status=%d body=%s", w.Code, w.Body.String())
+	reached := false
+	s.requireAuth(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		reached = true
+	})).ServeHTTP(httptest.NewRecorder(), requestWithToken("GET", "/api/tasks", issued))
+	if reached {
+		t.Fatal("revoked token reached a protected handler")
 	}
-	var logged struct {
+
+	if w := login(s, "ARTEX", "correct-horse-2"); w.Code != 200 {
+		t.Fatalf("login with the new password: status=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := login(s, "ARTEX", "correct-horse-1"); w.Code == 200 {
+		t.Fatal("the old password still logs in after a successful change")
+	}
+}
+
+// TestChangePasswordKeepsSessionWhenSaveFails covers what a client sees when the
+// rotation cannot be stored: the request fails, and nothing about the session may
+// move. The 500 must not carry a replacement token — a console that stored one
+// would throw away a working session — and the same token must still authorize
+// both a protected route and a console page.
+func TestChangePasswordKeepsSessionWhenSaveFails(t *testing.T) {
+	s := authTestServer(t)
+	issued := initPassword(t, s, "correct-horse-1")
+
+	// RotatePassword commits the hash and the counter together, so a non-numeric
+	// counter aborts the whole rotation.
+	if _, err := s.m.pg.Exec(`UPDATE settings SET value='not-a-number' WHERE key=$1`, s.authVersionKey); err != nil {
+		t.Fatal(err)
+	}
+	before := s.pwdVersion.Load()
+
+	w := changePassword(s, issued, "correct-horse-1", "correct-horse-2")
+	if w.Code != 500 {
+		t.Fatalf("failed save status=%d want 500 body=%s", w.Code, w.Body.String())
+	}
+	var failed struct {
 		Token string `json:"token"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &logged); err != nil || logged.Token == "" {
-		t.Fatalf("login token: %v body=%s", err, w.Body.String())
+	if err := json.Unmarshal(w.Body.Bytes(), &failed); err != nil {
+		t.Fatalf("failure body is not JSON: %v %s", err, w.Body.String())
 	}
-	if !s.sessionOK(logged.Token) {
-		t.Fatal("replacement token was rejected")
+	if failed.Token != "" {
+		t.Fatalf("a failed save returned a replacement token %q; a client would overwrite its working session with it", failed.Token)
+	}
+	if s.pwdVersion.Load() != before {
+		t.Fatalf("version moved from %d to %d after a failed save", before, s.pwdVersion.Load())
+	}
+	if !s.sessionOK(issued) {
+		t.Fatal("a failed save revoked the current token")
 	}
 
 	reached := false
 	s.requireAuth(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		reached = true
-	})).ServeHTTP(httptest.NewRecorder(), requestWithToken("GET", "/api/tasks", issued.Token))
-	if reached {
-		t.Fatal("revoked token reached a protected handler")
+	})).ServeHTTP(httptest.NewRecorder(), requestWithToken("GET", "/api/tasks", issued))
+	if !reached {
+		t.Fatal("the session no longer reaches a protected route after a failed save")
 	}
 
-	if _, err := m.pg.Exec(`UPDATE settings SET value='not-a-number' WHERE key=$1`, s.authVersionKey); err != nil {
-		t.Fatal(err)
+	pageReached := false
+	guard := s.webuiAuthGuard(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		pageReached = true
+		rw.WriteHeader(http.StatusOK)
+	}))
+	pageReq := httptest.NewRequest("GET", "/function/tasks", nil)
+	pageReq.AddCookie(&http.Cookie{Name: sessionCookie, Value: issued})
+	pageRec := httptest.NewRecorder()
+	guard.ServeHTTP(pageRec, pageReq)
+	if !pageReached || pageRec.Code != http.StatusOK {
+		t.Fatalf("console page after a failed save: reached=%v status=%d location=%q",
+			pageReached, pageRec.Code, pageRec.Header().Get("Location"))
 	}
-	before := s.pwdVersion.Load()
-	fail := httptest.NewRequest("POST", "/api/auth/change-password", strings.NewReader(`{"old_password":"correct-horse-2","new_password":"correct-horse-3"}`))
-	fail.Header.Set("Authorization", "Bearer "+logged.Token)
-	w = httptest.NewRecorder()
-	s.authChangePassword(w, fail)
-	if w.Code != 500 {
-		t.Fatalf("failed save status=%d want 500 body=%s", w.Code, w.Body.String())
+
+	if w := login(s, "ARTEX", "correct-horse-1"); w.Code != 200 {
+		t.Fatalf("old password rejected after a failed save: status=%d body=%s", w.Code, w.Body.String())
 	}
-	if s.pwdVersion.Load() != before {
-		t.Fatalf("version moved from %d to %d after a failed save", before, s.pwdVersion.Load())
+	if w := login(s, "ARTEX", "correct-horse-2"); w.Code == 200 {
+		t.Fatal("the new password was stored even though the rotation failed")
 	}
-	if !s.sessionOK(logged.Token) {
-		t.Fatal("a failed save revoked the current token")
-	}
-	w = httptest.NewRecorder()
-	s.authLogin(w, httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(`{"username":"ARTEX","password":"correct-horse-2"}`)))
-	if w.Code != 200 {
-		t.Fatalf("old password after a failed save: status=%d body=%s", w.Code, w.Body.String())
-	}
-	w = httptest.NewRecorder()
-	s.authLogin(w, httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(`{"username":"ARTEX","password":"correct-horse-3"}`)))
-	if w.Code == 200 {
-		t.Fatal("new password was stored even though the version write failed")
+}
+
+// TestLoginFailureReturns401WithMessage pins the contract the console depends on:
+// a rejected login answers 401 with the generic message (neither the username nor
+// the password is named, so the reply cannot be used to enumerate accounts), it
+// carries no token, and it leaves an unrelated session alone.
+func TestLoginFailureReturns401WithMessage(t *testing.T) {
+	s := authTestServer(t)
+	issued := initPassword(t, s, "correct-horse-1")
+
+	const wantMessage = "Incorrect username or password"
+	for _, tc := range []struct{ name, username, password string }{
+		{"wrong password", "ARTEX", "not-the-password"},
+		{"wrong username", "somebody", "correct-horse-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := login(s, tc.username, tc.password)
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("status=%d want 401 body=%s", w.Code, w.Body.String())
+			}
+			var body struct {
+				Error string `json:"error"`
+				Token string `json:"token"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body is not JSON: %v %s", err, w.Body.String())
+			}
+			if body.Error != wantMessage {
+				t.Fatalf("error=%q want %q", body.Error, wantMessage)
+			}
+			if body.Token != "" {
+				t.Fatalf("a rejected login returned a token %q", body.Token)
+			}
+			if !s.sessionOK(issued) {
+				t.Fatal("a rejected login disturbed an unrelated session")
+			}
+		})
 	}
 }
 
