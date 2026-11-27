@@ -18,12 +18,6 @@ import (
 	"strings"
 )
 
-// sessionCookieName is the cookie the console stores its JWT in. The same name
-// extractToken reads; a page request is authenticated by this cookie only, so a
-// session cannot ride in on a URL (?token=) where it would land in access logs,
-// referrers and browser history.
-const sessionCookieName = "artex_token"
-
 // webuiAuthGuard wraps the embedded SPA handler.
 func (s *Server) webuiAuthGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -50,7 +44,7 @@ func (s *Server) webuiAuthGuard(next http.Handler) http.Handler {
 
 // sessionCookieOK reports whether the request carries a verifiable session.
 func (s *Server) sessionCookieOK(r *http.Request) bool {
-	c, err := r.Cookie(sessionCookieName)
+	c, err := r.Cookie(sessionCookie)
 	if err != nil || c.Value == "" {
 		return false
 	}

@@ -82,7 +82,7 @@ func TestWebuiAuthGuard(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(tc.method, tc.path, nil)
 			if tc.cookie != "" {
-				req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: tc.cookie})
+				req.AddCookie(&http.Cookie{Name: sessionCookie, Value: tc.cookie})
 			}
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
@@ -116,7 +116,7 @@ func TestWebuiAuthGuardRejectsStalePasswordVersion(t *testing.T) {
 	s := guardServer()
 	s.pwdVersion.Store(2)
 	req := httptest.NewRequest(http.MethodGet, "/function/tasks", nil)
-	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: mintSession(t, guardKey, 1)})
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: mintSession(t, guardKey, 1)})
 	rec := httptest.NewRecorder()
 	s.webuiAuthGuard(guardHandler(t)).ServeHTTP(rec, req)
 	if rec.Code != http.StatusTemporaryRedirect {
@@ -130,7 +130,7 @@ func TestWebuiAuthGuardRejectsWhenPasswordStateUnreadable(t *testing.T) {
 	s := guardServer()
 	s.pwdState.Store(pwdUnreadable)
 	req := httptest.NewRequest(http.MethodGet, "/function/tasks", nil)
-	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: mintSession(t, guardKey, 0)})
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: mintSession(t, guardKey, 0)})
 	rec := httptest.NewRecorder()
 	s.webuiAuthGuard(guardHandler(t)).ServeHTTP(rec, req)
 	if rec.Code != http.StatusTemporaryRedirect {

@@ -39,6 +39,11 @@ const (
 	maxPasswordBytes = 72
 
 	pwdLimitTokenPrefix = "tok:"
+
+	// sessionCookie carries the console's JWT. The API reads it, the cookie-based
+	// CSRF check requires it, and the page guard (webui_guard.go) authorizes on it;
+	// one name keeps those three from drifting apart.
+	sessionCookie = "artex_token"
 )
 
 // errDataSourceUnavailable is the uniform reply when a password-related read fails.
@@ -278,7 +283,7 @@ func extractToken(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimPrefix(h, "Bearer ")
 	}
-	if c, err := r.Cookie("artex_token"); err == nil && c.Value != "" {
+	if c, err := r.Cookie(sessionCookie); err == nil && c.Value != "" {
 		return c.Value
 	}
 	return r.URL.Query().Get("token")
@@ -291,7 +296,7 @@ func cookieAuthenticated(r *http.Request) bool {
 	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 		return false
 	}
-	c, err := r.Cookie("artex_token")
+	c, err := r.Cookie(sessionCookie)
 	return err == nil && c.Value != ""
 }
 
