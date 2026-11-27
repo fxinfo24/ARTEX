@@ -88,3 +88,34 @@ jobs:
           python-version: "3.12"
       - run: python3 scripts/posture_check_test.py
       - run: python3 -m unittest discover -s scripts/benchmark -p 'test_*.py' -v
+
+  # Mutation checks: break a boundary on purpose and require the test that guards
+  # it to fail. A green result after the mutation means the assertion was
+  # decorative — the exact failure a passing suite cannot show you. The script
+  # edits tracked files and restores them with `git checkout --`, so it refuses to
+  # start unless those files are clean.
+  mutation:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: artex
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: artextest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U artex"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ARTEX_PG_DSN: postgres://artex:testpass@localhost:5432/artextest?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: mutations
+        run: python3 scripts/mutation_check.py
