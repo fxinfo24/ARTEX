@@ -44,7 +44,13 @@ numbered migrations from `db/migrations/*.sql`, recording name + SHA-256 in
 | `skills/` | Skill definitions | One `SKILL.md` per subdirectory, loaded from `SkillDir()` |
 
 The frontend lives in `web/` (Next.js 16, React 19) and is embedded into the Go
-binary via `server/webui_embed.go` when built with `-tags embedui`.
+binary via `server/webui_embed.go` when built with `-tags embedui`. A static
+export has no middleware, so the page guard `next dev` runs (`web/src/proxy.ts`)
+is not in the bundle and the embedded handler authorizes pages itself
+(`server/webui_guard.go`): every page except `/login` and `/setup` needs an
+`artex_token` cookie that verifies against the JWT key and the current password
+version, and anything else is redirected to `/login`. Assets and `/api/*` are not
+pages; `/api/*` keeps its own `requireAuth` 401.
 
 ## 3. End-to-end flow: goal → finding with evidence
 

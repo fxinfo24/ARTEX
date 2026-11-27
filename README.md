@@ -755,6 +755,15 @@ known to be HTTPS: directly over TLS, or via `X-Forwarded-Proto: https` from a t
 same list above enables it, so with nginx in front, the 443 server answers with HSTS after you set
 `ARTEX_TRUSTED_PROXIES`.
 
+**Console pages need a session**: the console is a Next.js static export, and an export carries no
+middleware, so the guard that `next dev` runs (`src/proxy.ts`) is not in the bundle. The server
+enforces it instead: every page except `/login` and `/setup` requires an `artex_token` cookie that
+verifies against the JWT key and the current password version, and anything else is redirected to
+`/login` (307). Assets (`_next/*`, files with an extension) and `/api/*` are not pages and are
+served as before, and `/api/*` keeps its own 401. A visitor who already holds a valid session is
+sent from `/login` to `/function/tasks`. A token is accepted from the cookie only for a page
+request, never from `?token=`, so a session cannot travel in a URL.
+
 > Only when SSE needs a different origin from the page (e.g. a dedicated subdomain) should you set
 > `NEXT_PUBLIC_SSE_BASE` **at build time** (it is baked into the static bundle during `next build`;
 > setting it at container runtime has no effect).

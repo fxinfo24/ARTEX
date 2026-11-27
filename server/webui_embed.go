@@ -18,9 +18,12 @@ import (
 //go:embed all:webui/dist
 var webuiDist embed.FS
 
-// webuiHandler serves the embedded SPA. Public (no JWT) — auth is enforced
-// client-side and on /api. Serves the exported per-route index.html files and
-// falls back to index.html so client-side routing still resolves unknown paths.
+// webuiHandler serves the embedded SPA to authenticated callers. The exported
+// bundle has no middleware (a static export drops Next's src/proxy.ts), so the
+// page-level authorization that `next dev` performs has to happen here:
+// webuiAuthGuard redirects unauthenticated page requests to /login and leaves
+// assets alone. Serves the exported per-route index.html files and falls back to
+// index.html so client-side routing still resolves unknown paths.
 //
 // Responses carry an ETag and, for the content-hashed Next chunks, immutable
 // caching; compressible bodies are gzipped when the client accepts it. See
@@ -32,7 +35,7 @@ func (s *Server) webuiHandler() http.Handler {
 	if err != nil {
 		panic(err)
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return s.webuiAuthGuard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
 		if p == "" {
 			p = "index.html"
@@ -49,5 +52,5 @@ func (s *Server) webuiHandler() http.Handler {
 		if !serveWebAsset(w, r, root, "index.html", false) {
 			http.NotFound(w, r)
 		}
-	})
+	}))
 }

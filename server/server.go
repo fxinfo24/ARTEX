@@ -1085,8 +1085,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/intercept/judge/usage", s.interceptJudgeUsage) // cumulative token usage of fallback approval
 
 	// /api/* goes through CORS + JWT; everything else is served by the embedded
-	// frontend (public — auth is enforced client-side and on the API). With the
-	// no-embed build the webui handler just 404s (run `next dev` separately).
+	// frontend, which requires a session cookie on every page except /login and
+	// /setup (webuiAuthGuard — a static export carries no Next middleware). With
+	// the no-embed build the webui handler just 404s (run `next dev` separately).
 	api := cors(s.requireAuth(mux))
 	root := http.NewServeMux()
 	root.Handle("/api/", api)
