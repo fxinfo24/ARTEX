@@ -17,14 +17,14 @@ import (
 // fakeStore is the gate's store without a database. approve and revoke do what
 // the decide endpoint and the revoke route do to the pins.
 type fakeStore struct {
-	mu     sync.Mutex
-	rules  []db.AssetInterceptRule
+	mu       sync.Mutex
+	rules    []db.AssetInterceptRule
 	pins     []*db.TargetPin
 	declared []db.TaskScope
-	exempt []db.TargetExemption
-	fail   map[string]error // by method name
-	reads  int
-	logged []db.TargetDecision
+	exempt   []db.TargetExemption
+	fail     map[string]error // by method name
+	reads    int
+	logged   []db.TargetDecision
 }
 
 func (s *fakeStore) read(method string) error {
