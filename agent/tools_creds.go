@@ -87,8 +87,7 @@ func (t *ToolSet) listTaskCredentials() actool.CoreTool {
 }
 
 // taskCredentialOverview renders the credentials block injected into the worker's
-// graph overview. Empty user-side passwords surface as an explicit instruction
-// (the agent generates and records one) rather than a half-entry.
+// graph overview.
 func (t *ToolSet) taskCredentialOverview() []map[string]any {
 	if t.ts == nil || t.taskID <= 0 {
 		return nil
@@ -97,12 +96,25 @@ func (t *ToolSet) taskCredentialOverview() []map[string]any {
 	if err != nil || len(list) == 0 {
 		return nil
 	}
+	return credentialOverviewRows(list)
+}
+
+// credentialOverviewRows is the credentials block itself: which accounts this task
+// has, never the secrets in them. The overview is part of every prompt, so a
+// plaintext password here would sit in standing context for the whole run, be
+// re-sent on every call and land in every transcript copy. The value is written
+// only into the tool output the agent explicitly asks for
+// (list_task_credentials), which keeps it out of the context until it is needed.
+// Empty user-side passwords stay an explicit instruction (the agent generates and
+// records one) rather than a half-entry.
+func credentialOverviewRows(list []db.TaskCredential) []map[string]any {
 	out := make([]map[string]any, 0, len(list))
 	for _, c := range list {
 		m := map[string]any{
-			"domain":   c.Domain,
-			"username": c.Username,
-			"source":   c.Source,
+			"domain":       c.Domain,
+			"username":     c.Username,
+			"source":       c.Source,
+			"password_set": c.Password != "",
 		}
 		if c.Note != "" {
 			m["note"] = c.Note
@@ -110,7 +122,7 @@ func (t *ToolSet) taskCredentialOverview() []map[string]any {
 		if c.Password == "" {
 			m["instruction"] = "no password yet: register an account with this username on this domain (choose a strong unique password), then record it via save_task_credential"
 		} else {
-			m["password"] = c.Password
+			m["instruction"] = "the password is recorded but deliberately not shown here; call list_task_credentials to read it when you need to sign in"
 		}
 		out = append(out, m)
 	}
